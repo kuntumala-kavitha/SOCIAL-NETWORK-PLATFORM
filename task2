@@ -1,0 +1,249 @@
+# Initialize the project
+
+npx create-react-app social-network
+cd social-network
+npm init -y
+npm install express mongoose socket.io cors
+npm install --save-dev nodemon
+
+# Folder Structure
+
+/social-network
+│
+├── /client (React Frontend)
+│   ├── /src
+│   │   ├── App.js
+│   │   ├── index.js
+│   │   ├── /components
+│   │   ├── /pages
+│   │   └── /styles
+│   └── package.json
+│
+├── /server (Node.js Backend)
+│   ├── /models
+│   ├── /routes
+│   ├── server.js
+│   ├── package.json
+│   └── .env
+└── README.md
+
+# Backend: Node.js with Express.js
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
+require('dotenv').config();
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+});
+
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/users', require('./routes/users'));
+app.use('/api/posts', require('./routes/posts'));
+
+io.on('connection', (socket) => {
+    console.log('A user connected');
+
+    socket.on('new_post', (data) => {
+        io.emit('update_feed', data);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('User disconnected');
+    });
+});
+
+server.listen(process.env.PORT || 5000, () => {
+    console.log(`Server is running on port ${process.env.PORT}`);
+});
+
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+    username: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    profilePicture: { type: String, default: '' },
+    friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    friendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+}, { timestamps: true });
+
+module.exports = mongoose.model('User', UserSchema);
+
+
+const mongoose = require('mongoose');
+
+const PostSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    content: { type: String, required: true },
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    comments: [{
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        content: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now },
+    }],
+    media: { type: String },
+}, { timestamps: true });
+
+module.exports = mongoose.model('Post', PostSchema);
+
+
+const express = require('express');
+const User = require('../models/User');
+const router = express.Router();
+
+// Register User
+router.post('/register', async (req, res) => {
+    try {
+        const newUser = new User(req.body);
+        const savedUser = await newUser.save();
+        res.status(200).json(savedUser);
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+// Login User
+router.post('/login', async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.body.email });
+        if (user.password === req.body.password) {
+            res.status(200).json(user);
+        } else {
+            res.status(400).json("Wrong credentials");
+        }
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+// Friend Request
+router.post('/:id/request', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        const friend = await User.findById(req.body.friendId);
+        if (!user.friends.includes(friend._id)) {
+            await user.updateOne({ $push: { friendRequests: friend._id } });
+            res.status(200).json("Friend request sent");
+        } else {
+            res.status(400).json("Already friends");
+        }
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+module.exports = router;
+
+
+const express = require('express');
+const Post = require('../models/Post');
+const router = express.Router();
+
+// Create Post
+router.post('/', async (req, res) => {
+    try {
+        const newPost = new Post(req.body);
+        const savedPost = await newPost.save();
+        res.status(200).json(savedPost);
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+// Get Posts
+router.get('/', async (req, res) => {
+    try {
+        const posts = await Post.find().populate('user').sort({ createdAt: -1 });
+        res.status(200).json(posts);
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+// Like Post
+router.put('/:id/like', async (req, res) => {
+    try {
+        const post = await Post.findById(req.params.id);
+        if (!post.likes.includes(req.body.userId)) {
+            await post.updateOne({ $push: { likes: req.body.userId } });
+            res.status(200).json("The post has been liked");
+        } else {
+            res.status(400).json("Already liked");
+        }
+    } catch (err) {
+        res.status(500).json(err);
+    }
+});
+
+module.exports = router;
+
+#Frontend: React.js
+
+import React from 'react';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import Home from './pages/Home';
+import Profile from './pages/Profile';
+import Login from './pages/Login';
+import Register from './pages/Register';
+
+function App() {
+    return (
+        <Router>
+            <Routes>
+                <Route path="/" element={<Home />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/profile/:id" element={<Profile />} />
+            </Routes>
+        </Router>
+    );
+}
+
+export default App;
+
+import React, { useState, useEffect } from 'react';
+import io from 'socket.io-client';
+import axios from 'axios';
+
+const socket = io('http://localhost:5000');
+
+const Home = () => {
+    const [posts, setPosts] = useState([]);
+
+    useEffect(() => {
+        const fetchPosts = async () => {
+            const res = await axios.get('http://localhost:5000/api/posts');
+            setPosts(res.data);
+        };
+        fetchPosts();
+
+        socket.on('update_feed', (newPost) => {
+            setPosts((prevPosts) => [newPost, ...prevPosts]);
+        });
+    }, []);
+
+    return (
+        <div>
+            {posts.map((post) => (
+                <div key={post._id}>
+                    <h3>{post.user.username}</h3>
+                    <p>{post.content}</p>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+export default Home;
+
+
